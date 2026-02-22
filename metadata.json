@@ -1,0 +1,5 @@
+{
+  "name": "TMS Auditoria de Frete - Legacy Edition",
+  "description": "Sistema TMS de Auditoria de Frete com interface clássica MDI (Windows 2000 style) para reprocessamento de XML e conciliação de valores.",
+  "requestFramePermissions": []
+}
