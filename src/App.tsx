@@ -5,6 +5,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import { 
   FileText, 
   RefreshCcw, 
@@ -73,6 +74,15 @@ interface XMLRecord {
   chaves?: string[];
 }
 
+interface ImportedFreightTable {
+  id: string;
+  embarcadorId: string;
+  transportadoraId: string;
+  filename: string;
+  status: 'Validado' | 'Com Erros';
+  data: any[]; // TableRowData[] from TabelaFreteImportacao
+}
+
 // --- Components ---
 
 export default function App() {
@@ -91,9 +101,11 @@ export default function App() {
   const [sidebarSearch, setSidebarSearch] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const memoryInputRef = useRef<HTMLInputElement>(null);
+  const zipFileInputRef = useRef<HTMLInputElement>(null);
 
   const [embarcadores, setEmbarcadores] = useLocalStorage<Embarcador[]>('embarcadores', []);
   const [transportadoras, setTransportadoras] = useLocalStorage<Transportadora[]>('transportadoras', []);
+  const [importedFreightTables, setImportedFreightTables] = useLocalStorage<ImportedFreightTable[]>('importedFreightTables', []);
 
   // --- Logic ---
 
@@ -166,6 +178,88 @@ export default function App() {
     if (memoryInputRef.current) memoryInputRef.current.value = '';
   };
 
+  const processXmlFile = (filename: string, text: string): XMLRecord | null => {
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(text, 'text/xml');
+    
+    const getCompValue = (name: string) => {
+      const comps = xmlDoc.getElementsByTagNameNS("*", 'Comp');
+      for (let j = 0; j < comps.length; j++) {
+        const xNomeNode = comps[j].getElementsByTagNameNS("*", 'xNome')[0];
+        const xNome = xNomeNode?.textContent?.trim().toUpperCase();
+        if (xNome === name.toUpperCase()) {
+          const vCompNode = comps[j].getElementsByTagNameNS("*", 'vComp')[0];
+          return parseNumeric(vCompNode?.textContent);
+        }
+      }
+      return 0;
+    };
+
+    // Extract components
+    const icms = getCompValue('ICMS') || parseNumeric(xmlDoc.getElementsByTagNameNS("*", 'vICMS')[0]?.textContent);
+    const pedagio = getCompValue('PEDAGIO');
+    const seguro = getCompValue('GRIS') || getCompValue('SEGURO');
+    const fretePeso = getCompValue('FRETE');
+
+    // Extract Origin and Destination
+    const xMunIni = xmlDoc.getElementsByTagNameNS("*", 'xMunIni')[0]?.textContent || '';
+    const xMunFim = xmlDoc.getElementsByTagNameNS("*", 'xMunFim')[0]?.textContent || '';
+    const origemDestino = `${xMunIni} / ${xMunFim}`.trim();
+
+    // Extract Embarcador (Remetente)
+    const embarcador = xmlDoc.getElementsByTagNameNS("*", 'rem')[0]?.getElementsByTagNameNS("*", 'xNome')[0]?.textContent || '';
+
+    // Extract NF-e Keys
+    const chaves: string[] = [];
+    const infNFeNodes = xmlDoc.getElementsByTagNameNS("*", 'infNFe');
+    for (let i = 0; i < infNFeNodes.length; i++) {
+      const chave = infNFeNodes[i].getElementsByTagNameNS("*", 'chave')[0]?.textContent;
+      if (chave) chaves.push(chave);
+    }
+    
+    // Calculation: Use vBC tag for reconciliation
+    const vBCNode = xmlDoc.getElementsByTagNameNS("*", 'vBC')[0];
+    const totalCalculado = vBCNode ? parseNumeric(vBCNode.textContent) : (icms + pedagio + seguro + fretePeso);
+    const valorLiquido = totalCalculado - icms;
+
+    // Try to find the code in xObs to match with memory map
+    const xObs = xmlDoc.getElementsByTagNameNS("*", 'xObs')[0]?.textContent || '';
+    
+    // Extract SOLTRANSP (Universal regex to handle spaces, hyphens, etc.)
+    // Matches: SOLTRANSP-2026-00231, SOLTRANSP - 2026-00231, SOLTRANSP 2026 00231, etc.
+    const solMatch = xObs.match(/SOLTRANSP\s*[- ]*\s*[0-9]{4}\s*[- ]*\s*[0-9]+/i);
+    const soltransp = solMatch ? solMatch[0].trim().toUpperCase() : '';
+
+    // Extract Código (10-digit sequence)
+    const codeMatch = xObs.match(/\d{10}/);
+    const codigo = codeMatch ? codeMatch[0] : '';
+    
+    const informed = memoryMap[codigo] || 0;
+
+    // Rule: If sum matches informed -> Conciliado
+    const isMatch = Math.abs(totalCalculado - informed) < 0.01;
+    const status = isMatch ? 'Conciliado' : 'Erro na Conciliação';
+
+    return {
+      id: Math.random().toString(36).substr(2, 9),
+      filename,
+      origemDestino,
+      icms,
+      pedagio,
+      seguro,
+      fretePeso,
+      valorLiquido,
+      totalCalculado,
+      valueInformed: informed,
+      status: status,
+      selected: false,
+      codigo,
+      soltransp,
+      embarcador,
+      chaves
+    };
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) return;
@@ -175,89 +269,51 @@ export default function App() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const text = await file.text();
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(text, 'text/xml');
-      
-      const getCompValue = (name: string) => {
-        const comps = xmlDoc.getElementsByTagNameNS("*", 'Comp');
-        for (let j = 0; j < comps.length; j++) {
-          const xNomeNode = comps[j].getElementsByTagNameNS("*", 'xNome')[0];
-          const xNome = xNomeNode?.textContent?.trim().toUpperCase();
-          if (xNome === name.toUpperCase()) {
-            const vCompNode = comps[j].getElementsByTagNameNS("*", 'vComp')[0];
-            return parseNumeric(vCompNode?.textContent);
-          }
-        }
-        return 0;
-      };
-
-      // Extract components
-      const icms = getCompValue('ICMS') || parseNumeric(xmlDoc.getElementsByTagNameNS("*", 'vICMS')[0]?.textContent);
-      const pedagio = getCompValue('PEDAGIO');
-      const seguro = getCompValue('GRIS') || getCompValue('SEGURO');
-      const fretePeso = getCompValue('FRETE');
-
-      // Extract Origin and Destination
-      const xMunIni = xmlDoc.getElementsByTagNameNS("*", 'xMunIni')[0]?.textContent || '';
-      const xMunFim = xmlDoc.getElementsByTagNameNS("*", 'xMunFim')[0]?.textContent || '';
-      const origemDestino = `${xMunIni} / ${xMunFim}`.trim();
-
-      // Extract Embarcador (Remetente)
-      const embarcador = xmlDoc.getElementsByTagNameNS("*", 'rem')[0]?.getElementsByTagNameNS("*", 'xNome')[0]?.textContent || '';
-
-      // Extract NF-e Keys
-      const chaves: string[] = [];
-      const infNFeNodes = xmlDoc.getElementsByTagNameNS("*", 'infNFe');
-      for (let i = 0; i < infNFeNodes.length; i++) {
-        const chave = infNFeNodes[i].getElementsByTagNameNS("*", 'chave')[0]?.textContent;
-        if (chave) chaves.push(chave);
-      }
-      
-      // Calculation: Use vBC tag for reconciliation
-      const vBCNode = xmlDoc.getElementsByTagNameNS("*", 'vBC')[0];
-      const totalCalculado = vBCNode ? parseNumeric(vBCNode.textContent) : (icms + pedagio + seguro + fretePeso);
-      const valorLiquido = totalCalculado - icms;
-
-      // Try to find the code in xObs to match with memory map
-      const xObs = xmlDoc.getElementsByTagNameNS("*", 'xObs')[0]?.textContent || '';
-      
-      // Extract SOLTRANSP (Universal regex to handle spaces, hyphens, etc.)
-      // Matches: SOLTRANSP-2026-00231, SOLTRANSP - 2026-00231, SOLTRANSP 2026 00231, etc.
-      const solMatch = xObs.match(/SOLTRANSP\s*[- ]*\s*[0-9]{4}\s*[- ]*\s*[0-9]+/i);
-      const soltransp = solMatch ? solMatch[0].trim().toUpperCase() : '';
-
-      // Extract Código (10-digit sequence)
-      const codeMatch = xObs.match(/\d{10}/);
-      const codigo = codeMatch ? codeMatch[0] : '';
-      
-      const informed = memoryMap[codigo] || 0;
-
-      // Rule: If sum matches informed -> Conciliado
-      const isMatch = Math.abs(totalCalculado - informed) < 0.01;
-      const status = isMatch ? 'Conciliado' : 'Erro na Conciliação';
-
-      newRecords.push({
-        id: Math.random().toString(36).substr(2, 9),
-        filename: file.name,
-        origemDestino,
-        icms,
-        pedagio,
-        seguro,
-        fretePeso,
-        valorLiquido,
-        totalCalculado,
-        valueInformed: informed,
-        status: status,
-        selected: false,
-        codigo,
-        soltransp,
-        embarcador,
-        chaves
-      });
+      const record = processXmlFile(file.name, text);
+      if (record) newRecords.push(record);
     }
 
     setRecords(prev => [...prev, ...newRecords]);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleImportSuccess = (data: any[], embarcadorId: string, transportadoraId: string, filename: string, status: 'Validado' | 'Com Erros') => {
+    const newImportedTable: ImportedFreightTable = {
+      id: Math.random().toString(36).substr(2, 9),
+      embarcadorId,
+      transportadoraId,
+      filename,
+      status,
+      data,
+    };
+    setImportedFreightTables(prev => [...prev, newImportedTable]);
+  };
+
+  const handleZipUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const newRecords: XMLRecord[] = [];
+    const zip = new JSZip();
+
+    try {
+      const content = await zip.loadAsync(file);
+      const xmlFiles = Object.values(content.files).filter(zipEntry => !zipEntry.dir && zipEntry.name.toLowerCase().endsWith('.xml'));
+
+      for (const zipEntry of xmlFiles) {
+        const text = await zipEntry.async('text');
+        const record = processXmlFile(zipEntry.name, text);
+        if (record) newRecords.push(record);
+      }
+
+      setRecords(prev => [...prev, ...newRecords]);
+      alert(`${newRecords.length} arquivos XML processados do ZIP.`);
+    } catch (error) {
+      alert('Erro ao processar o arquivo ZIP. Certifique-se de que é um arquivo ZIP válido contendo XMLs.');
+      console.error('Erro ao processar ZIP:', error);
+    }
+
+    if (zipFileInputRef.current) zipFileInputRef.current.value = '';
   };
 
   const openAbonoModal = (id: string) => {
@@ -529,7 +585,20 @@ export default function App() {
                         className="win-button px-4 py-1 font-bold"
                         onClick={() => fileInputRef.current?.click()}
                       >
-                        Selecionar Arquivos...
+                        Selecionar XMLs...
+                      </button>
+                      <input 
+                        type="file" 
+                        accept=".zip" 
+                        className="hidden" 
+                        ref={zipFileInputRef}
+                        onChange={handleZipUpload}
+                      />
+                      <button 
+                        className="win-button px-4 py-1 font-bold bg-blue-50"
+                        onClick={() => zipFileInputRef.current?.click()}
+                      >
+                        Importar ZIP...
                       </button>
                     </div>
                   </div>
@@ -699,13 +768,13 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'Importação de Tabela Frete' && <TabelaFreteImportacao />}
+          {activeTab === 'Importação de Tabela Frete' && <TabelaFreteImportacao onImportSuccess={handleImportSuccess} />}
 
           {activeTab === 'Embarcadores' && <Embarcadores setActiveTab={setActiveTab} embarcadores={embarcadores} setEmbarcadores={setEmbarcadores} />}
 
           {activeTab === 'Transportadora' && <Transportadora setActiveTab={setActiveTab} transportadoras={transportadoras} setTransportadoras={setTransportadoras} />}
 
-          {activeTab === 'Cadastro Tabela Frete' && <CadastroTabelaFrete embarcadores={embarcadores} transportadoras={transportadoras} />}
+          {activeTab === 'Cadastro Tabela Frete' && <CadastroTabelaFrete embarcadores={embarcadores} transportadoras={transportadoras} importedFreightTables={importedFreightTables} />}
 
           {['Aprovação Tabela de Frete', 'Consulta Tabela de Frete', 'Controle de Tabelas Frete', 'Importação de Tabela Frete Vtex (XLSX)'].includes(activeTab) && activeTab !== 'Importação de Tabela Frete' && activeTab !== 'Cadastro Tabela Frete' && (
             <div className="flex items-center justify-center h-full win-inset bg-white">

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Plus, Pencil, Trash2, Copy, ClipboardPaste, Download, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, RefreshCw } from 'lucide-react';
 import PainelCadastroItensTabela from './PainelCadastroItensTabela';
+import PainelHistoricoItens from './PainelHistoricoItens';
 
 const initialData = [
   { id: 1, origem: 'São Paulo', destino: 'Rio de Janeiro', peso: '100kg', valor: 'R$ 250,00', cadastro: '01/01/2024', status: 'Ativo' },
@@ -9,7 +10,8 @@ const initialData = [
 
 const PainelItensTabela: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [itens, setItens] = useState(initialData);
-  const [isCadastroOpen, setIsCadastroOpen] = useState(false);
+    const [isCadastroOpen, setIsCadastroOpen] = useState(false);
+  const [isHistoricoOpen, setIsHistoricoOpen] = useState(false);
 
   const handleSaveItem = (novoItem: { origem: string; destino: string; peso: string; valor: string; status: string }) => {
     const novaData = {
@@ -39,6 +41,8 @@ const PainelItensTabela: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <button className="win-button flex items-center gap-1 px-2 py-0.5"><ClipboardPaste size={14} />Colar</button>
             <div className="w-[1px] h-4 bg-[#808080] mx-1" />
             <button className="win-button flex items-center gap-1 px-2 py-0.5"><Download size={14} />Exportar</button>
+            <div className="w-[1px] h-4 bg-[#808080] mx-1" />
+            <button onClick={() => setIsHistoricoOpen(true)} className="win-button flex items-center gap-1 px-2 py-0.5">Histórico</button>
         </div>
 
         <div className="flex-1 overflow-auto m-1 win-inset bg-white">
@@ -85,6 +89,7 @@ const PainelItensTabela: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <div className="win-inset px-2">{itens.length} registro(s)</div>
         </div>
         {isCadastroOpen && <PainelCadastroItensTabela onClose={() => setIsCadastroOpen(false)} onSave={handleSaveItem} />}
+        {isHistoricoOpen && <PainelHistoricoItens onClose={() => setIsHistoricoOpen(false)} />}
       </div>
     </div>
   );

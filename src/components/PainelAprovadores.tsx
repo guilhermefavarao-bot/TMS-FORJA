@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Plus, Pencil, Trash2, Copy, ClipboardPaste, Download, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight, RefreshCw } from 'lucide-react';
 import PainelCadastroAprovadores from './PainelCadastroAprovadores';
+import PainelHistoricoAprovadores from './PainelHistoricoAprovadores';
 
 const initialData = [
   { id: 1, nome: 'João Silva', dataCadastro: '01/01/2024', status: 'Ativo' },
@@ -9,7 +10,8 @@ const initialData = [
 
 const PainelAprovadores: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [aprovadores, setAprovadores] = useState(initialData);
-  const [isCadastroOpen, setIsCadastroOpen] = useState(false);
+    const [isCadastroOpen, setIsCadastroOpen] = useState(false);
+  const [isHistoricoOpen, setIsHistoricoOpen] = useState(false);
 
   const handleSaveAprovador = (novoAprovador: { nome: string; status: string }) => {
     const novaData = {
@@ -39,6 +41,8 @@ const PainelAprovadores: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <button className="win-button flex items-center gap-1 px-2 py-0.5"><ClipboardPaste size={14} />Colar</button>
             <div className="w-[1px] h-4 bg-[#808080] mx-1" />
             <button className="win-button flex items-center gap-1 px-2 py-0.5"><Download size={14} />Exportar</button>
+            <div className="w-[1px] h-4 bg-[#808080] mx-1" />
+            <button onClick={() => setIsHistoricoOpen(true)} className="win-button flex items-center gap-1 px-2 py-0.5">Histórico</button>
         </div>
 
         <div className="flex-1 overflow-auto m-1 win-inset bg-white">
@@ -79,6 +83,7 @@ const PainelAprovadores: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <div className="win-inset px-2">{aprovadores.length} registro(s)</div>
         </div>
         {isCadastroOpen && <PainelCadastroAprovadores onClose={() => setIsCadastroOpen(false)} onSave={handleSaveAprovador} />}
+        {isHistoricoOpen && <PainelHistoricoAprovadores onClose={() => setIsHistoricoOpen(false)} />}
       </div>
     </div>
   );

@@ -2,9 +2,23 @@ import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { Filter, Upload, FileUp, Download } from 'lucide-react';
 
+interface TableRowData {
+  'ID EMBARC': string;
+  'ID TRANSPORT': string;
+  'CÓDIGO': string;
+  'SOLTRANSP': string;
+  'ORIGEM': string;
+  'DESTINO': string;
+  'ICMS': number;
+  'PEDÁGIOS': number;
+  'SEGURO': number;
+  'FRETE PESO': number;
+  'FRETE ALL IN': number;
+}
+
 interface ImportRecord {
   id: number;
-  status: 'Pendente' | 'Processado' | 'Erro';
+  status: 'Pendente' | 'Validado' | 'Com Erros' | 'Processado';
   dataImportacao: string;
   arquivo: string;
   usuario: string;
@@ -13,9 +27,15 @@ interface ImportRecord {
   qtdeImportados: number;
   qtdeErros: number;
   qtdeTotal: number;
+  data?: TableRowData[]; // Store the parsed data
+  validationErrors?: string[]; // Store validation errors
 }
 
-const TabelaFreteImportacao: React.FC = () => {
+interface TabelaFreteImportacaoProps {
+  onImportSuccess: (data: TableRowData[], embarcadorId: string, transportadoraId: string, filename: string, status: 'Validado' | 'Com Erros') => void;
+}
+
+const TabelaFreteImportacao: React.FC<TabelaFreteImportacaoProps> = ({ onImportSuccess }) => {
   const [records, setRecords] = useState<ImportRecord[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -33,36 +53,85 @@ const TabelaFreteImportacao: React.FC = () => {
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = e.target?.result;
+      const workbook = XLSX.read(data, { type: 'binary' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const json: TableRowData[] = XLSX.utils.sheet_to_json(worksheet);
+
       const now = new Date();
+      let qtdeErros = 0;
+      const validationErrors: string[] = [];
+
+      // Basic validation: check if essential columns are filled
+      const requiredColumns: (keyof TableRowData)[] = ['ID EMBARC', 'ID TRANSPORT', 'CÓDIGO', 'ORIGEM', 'DESTINO', 'FRETE ALL IN'];
+      const validatedData = json.filter((row, index) => {
+        let isValidRow = true;
+        for (const col of requiredColumns) {
+          if (!row[col] || String(row[col]).trim() === '') {
+            isValidRow = false;
+            validationErrors.push(`Linha ${index + 2}: Coluna '${col}' está vazia.`);
+            break;
+          }
+        }
+        if (!isValidRow) qtdeErros++;
+        return isValidRow;
+      });
+
+      const status: 'Validado' | 'Com Erros' = qtdeErros === 0 ? 'Validado' : 'Com Erros';
+
       const newRecord: ImportRecord = {
         id: Date.now(),
-        status: 'Pendente',
+        status: status,
         dataImportacao: now.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
         arquivo: file.name,
         usuario: 'user1', // Placeholder, replace with actual user logic
-        dataValidacao: '',
+        dataValidacao: now.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
         dataProcessamento: '',
-        qtdeImportados: 0,
-        qtdeErros: 0,
-        qtdeTotal: 0, // Placeholder, should be read from file later
+        qtdeImportados: validatedData.length,
+        qtdeErros: qtdeErros,
+        qtdeTotal: json.length,
+        data: validatedData,
+        validationErrors: validationErrors,
       };
       setRecords(prevRecords => [newRecord, ...prevRecords]);
-    }
+
+      if (status === 'Validado') {
+        // Assuming all rows in validatedData have the same embarcadorId and transportadoraId
+        const embarcadorId = validatedData[0]?.['ID EMBARC'];
+        const transportadoraId = validatedData[0]?.['ID TRANSPORT'];
+        if (embarcadorId && transportadoraId) {
+          onImportSuccess(validatedData, embarcadorId, transportadoraId, file.name, status);
+        } else {
+          alert('Erro: ID EMBARC ou ID TRANSPORT não encontrados na primeira linha da tabela.');
+        }
+      } else {
+        alert(`Arquivo ${file.name} importado com ${qtdeErros} erros de validação.`);
+      }
+    };
+    reader.readAsBinaryString(file);
+
     // Reset file input to allow selecting the same file again
     if(event.target) {
       event.target.value = '';
     }
   };
 
-  const renderStatus = (status: 'Pendente' | 'Processado' | 'Erro') => {
+  const renderStatus = (status: 'Pendente' | 'Validado' | 'Com Erros' | 'Processado') => {
     switch (status) {
+      case 'Validado':
+        return <div className="w-3 h-3 rounded-full bg-green-500 border border-black mx-auto" title="Validado"></div>;
+      case 'Com Erros':
+        return <div className="w-3 h-3 rounded-full bg-yellow-400 border border-black mx-auto" title="Com Erros"></div>;
       case 'Processado':
-        return <div className="w-3 h-3 rounded-full bg-green-500 border border-black mx-auto" title="Processado"></div>;
-      case 'Erro':
-        return <div className="w-3 h-3 rounded-full bg-red-500 border border-black mx-auto" title="Erro"></div>;
+        return <div className="w-3 h-3 rounded-full bg-blue-500 border border-black mx-auto" title="Processado"></div>;
       case 'Pendente':
-        return <div className="w-3 h-3 rounded-full bg-yellow-400 border border-black mx-auto" title="Pendente"></div>;
+      default:
+        return <div className="w-3 h-3 rounded-full bg-gray-400 border border-black mx-auto" title="Pendente"></div>;
     }
   };
 
