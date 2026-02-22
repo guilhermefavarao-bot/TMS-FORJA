@@ -28,6 +28,7 @@ import TabelaFreteImportacao from './components/TabelaFreteImportacao';
 import Embarcadores from './components/Embarcadores';
 import CadastroTabelaFrete from './components/CadastroTabelaFrete';
 import Transportadora from './components/Transportadora';
+import PainelReprocessarComTabela from './components/PainelReprocessarComTabela';
 import useLocalStorage from './hooks/useLocalStorage';
 
 // --- Types ---
@@ -71,6 +72,9 @@ interface XMLRecord {
   codigo?: string;
   soltransp?: string;
   embarcador?: string;
+  transportadora?: string;
+  embarcadorId?: string; // Add this for easier matching
+  transportadoraId?: string; // Add this for easier matching
   chaves?: string[];
 }
 
@@ -87,6 +91,7 @@ interface ImportedFreightTable {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('reprocessar');
+  const [reprocessarOpen, setReprocessarOpen] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [tabelaFreteOpen, setTabelaFreteOpen] = useState(true);
   const [backofficeOpen, setBackofficeOpen] = useState(true);
@@ -99,6 +104,7 @@ export default function App() {
   const [selectAll, setSelectAll] = useState(false);
   const [memoryMap, setMemoryMap] = useState<Record<string, number>>({});
   const [sidebarSearch, setSidebarSearch] = useState('');
+  const [tableIdToReconcile, setTableIdToReconcile] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const memoryInputRef = useRef<HTMLInputElement>(null);
   const zipFileInputRef = useRef<HTMLInputElement>(null);
@@ -207,7 +213,16 @@ export default function App() {
     const origemDestino = `${xMunIni} / ${xMunFim}`.trim();
 
     // Extract Embarcador (Remetente)
-    const embarcador = xmlDoc.getElementsByTagNameNS("*", 'rem')[0]?.getElementsByTagNameNS("*", 'xNome')[0]?.textContent || '';
+    const remetenteNode = xmlDoc.getElementsByTagNameNS("*", 'rem')[0];
+    const embarcador = remetenteNode?.getElementsByTagNameNS("*", 'xNome')[0]?.textContent || '';
+    const embarcadorCnpj = remetenteNode?.getElementsByTagNameNS("*", 'CNPJ')[0]?.textContent || '';
+    const embarcadorId = embarcadores.find(e => e.cnpj === embarcadorCnpj)?.id || embarcadorCnpj;
+
+    // Extract Transportadora
+    const transportadoraNode = xmlDoc.getElementsByTagNameNS("*", 'transp')[0];
+    const transportadora = transportadoraNode?.getElementsByTagNameNS("*", 'xNome')[0]?.textContent || '';
+    const transportadoraCnpj = transportadoraNode?.getElementsByTagNameNS("*", 'CNPJ')[0]?.textContent || '';
+    const transportadoraId = transportadoras.find(t => t.cnpj === transportadoraCnpj)?.id || transportadoraCnpj;
 
     // Extract NF-e Keys
     const chaves: string[] = [];
@@ -256,6 +271,9 @@ export default function App() {
       codigo,
       soltransp,
       embarcador,
+      transportadora,
+      embarcadorId,
+      transportadoraId,
       chaves
     };
   };
@@ -287,6 +305,52 @@ export default function App() {
       data,
     };
     setImportedFreightTables(prev => [...prev, newImportedTable]);
+  };
+
+  const handleReconcileWithTable = () => {
+    if (!tableIdToReconcile) {
+      alert('Por favor, insira o ID da tabela para conciliar.');
+      return;
+    }
+
+    const targetTable = importedFreightTables.find(t => t.id.startsWith(tableIdToReconcile));
+    if (!targetTable) {
+      alert(`Tabela com ID '${tableIdToReconcile}' não encontrada.`);
+      return;
+    }
+
+    const updatedRecords = records.map(xmlRecord => {
+      // Check if Embarcador and Transportadora match
+      const embarcadorMatch = xmlRecord.embarcadorId === targetTable.embarcadorId;
+      const transportadoraMatch = xmlRecord.transportadoraId === targetTable.transportadoraId;
+
+      if (!embarcadorMatch || !transportadoraMatch) {
+        return { ...xmlRecord, status: 'Erro na Conciliação', observacao: 'Embarcador ou Transportadora diferentes da tabela.' };
+      }
+
+      // Find matching row in the imported table data
+      const matchingTableRow = targetTable.data.find(tableRow => 
+        tableRow['CÓDIGO'] === xmlRecord.codigo &&
+        tableRow['ORIGEM'] === xmlRecord.origemDestino.split(' / ')[0] &&
+        tableRow['DESTINO'] === xmlRecord.origemDestino.split(' / ')[1]
+      );
+
+      if (matchingTableRow) {
+        const expectedAllIn = matchingTableRow['FRETE ALL IN'];
+        const isMatch = Math.abs(xmlRecord.totalCalculado - expectedAllIn) < 0.01;
+        return { 
+          ...xmlRecord, 
+          status: isMatch ? 'Conciliado' : 'Erro na Conciliação',
+          observacao: isMatch ? 'Conciliado com tabela.' : `Divergência: Esperado ${formatBRL(expectedAllIn)}, Calculado ${formatBRL(xmlRecord.totalCalculado)}.`,
+          valueInformed: expectedAllIn // Update valueInformed with the table's value
+        };
+      } else {
+        return { ...xmlRecord, status: 'Erro na Conciliação', observacao: 'Item não encontrado na tabela de frete.' };
+      }
+    });
+
+    setRecords(updatedRecords);
+    alert(`Conciliação com tabela '${targetTable.filename}' concluída.`);
   };
 
   const handleZipUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -506,6 +570,28 @@ export default function App() {
                   </div>
                 ))}
               </div>
+
+              <div className="flex items-center gap-1 mt-2 mb-1 cursor-pointer" onClick={() => setReprocessarOpen(!reprocessarOpen)}>
+                <ChevronDown size={14} className={`transform transition-transform ${reprocessarOpen ? '' : '-rotate-90'}`} />
+                <Folder size={14} className="text-yellow-600" />
+                <span className="font-bold">Reprocessar</span>
+              </div>
+              {reprocessarOpen && (
+                <div className="ml-4 space-y-1">
+                  {[ 
+                    {id: 'reprocessar-com-tabela', label: 'Reprocessar com Tabela', icon: <RefreshCcw size={14} />} 
+                  ].filter(item => item.label.toLowerCase().includes(sidebarSearch.toLowerCase())).map(item => (
+                    <div 
+                      key={item.id}
+                      className={`flex items-center gap-1 p-0.5 cursor-default ${activeTab === item.id ? 'bg-[#000080] text-white' : 'hover:bg-blue-100'}`}
+                      onClick={() => setActiveTab(item.id)}
+                    >
+                      {item.icon}
+                      <span>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="flex items-center gap-1 mt-2 mb-1 cursor-pointer" onClick={() => setTabelaFreteOpen(!tabelaFreteOpen)}>
                 <ChevronDown size={14} className={`transform transition-transform ${tabelaFreteOpen ? '' : '-rotate-90'}`} />
@@ -769,6 +855,15 @@ export default function App() {
           )}
 
           {activeTab === 'Importação de Tabela Frete' && <TabelaFreteImportacao onImportSuccess={handleImportSuccess} />}
+
+          {activeTab === 'reprocessar-com-tabela' && <PainelReprocessarComTabela 
+            importedFreightTables={importedFreightTables} 
+            embarcadores={embarcadores} 
+            transportadoras={transportadoras} 
+            processXmlFile={processXmlFile} 
+            formatBRL={formatBRL} 
+            renderStatusIcon={renderStatusIcon} 
+          />}
 
           {activeTab === 'Embarcadores' && <Embarcadores setActiveTab={setActiveTab} embarcadores={embarcadores} setEmbarcadores={setEmbarcadores} />}
 
