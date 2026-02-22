@@ -184,7 +184,7 @@ export default function App() {
     if (memoryInputRef.current) memoryInputRef.current.value = '';
   };
 
-  const processXmlFile = (filename: string, text: string): XMLRecord | null => {
+  const processXmlFile = (filename: string, text: string, currentMemoryMap: Record<string, number>): XMLRecord | null => {
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(text, 'text/xml');
     
@@ -249,7 +249,7 @@ export default function App() {
     const codeMatch = xObs.match(/\d{10}/);
     const codigo = codeMatch ? codeMatch[0] : '';
     
-    const informed = memoryMap[codigo] || 0;
+    const informed = currentMemoryMap[codigo] || 0;
 
     // Rule: If sum matches informed -> Conciliado
     const isMatch = Math.abs(totalCalculado - informed) < 0.01;
@@ -287,7 +287,7 @@ export default function App() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const text = await file.text();
-      const record = processXmlFile(file.name, text);
+      const record = processXmlFile(file.name, text, memoryMap);
       if (record) newRecords.push(record);
     }
 
@@ -366,7 +366,7 @@ export default function App() {
 
       for (const zipEntry of xmlFiles) {
         const text = await zipEntry.async('text');
-        const record = processXmlFile(zipEntry.name, text);
+        const record = processXmlFile(zipEntry.name, text, memoryMap);
         if (record) newRecords.push(record);
       }
 
@@ -862,7 +862,8 @@ export default function App() {
             transportadoras={transportadoras} 
             processXmlFile={processXmlFile} 
             formatBRL={formatBRL} 
-            renderStatusIcon={renderStatusIcon} 
+            renderStatusIcon={renderStatusIcon}
+            globalMemoryMap={memoryMap} // Pass the global memory map
           />}
 
           {activeTab === 'Embarcadores' && <Embarcadores setActiveTab={setActiveTab} embarcadores={embarcadores} setEmbarcadores={setEmbarcadores} />}

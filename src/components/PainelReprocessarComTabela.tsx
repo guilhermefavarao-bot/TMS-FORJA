@@ -56,13 +56,16 @@ interface ImportedFreightTable {
   data: any[]; // TableRowData[] from TabelaFreteImportacao
 }
 
+import * as XLSX from 'xlsx';
+
 interface PainelReprocessarComTabelaProps {
   importedFreightTables: ImportedFreightTable[];
   embarcadores: Embarcador[];
   transportadoras: Transportadora[];
-  processXmlFile: (filename: string, text: string) => XMLRecord | null;
+  processXmlFile: (filename: string, text: string, currentMemoryMap: Record<string, number>) => XMLRecord | null;
   formatBRL: (val: number) => string;
   renderStatusIcon: (status: string) => React.ReactNode;
+  globalMemoryMap: Record<string, number>;
 }
 
 export default function PainelReprocessarComTabela({
@@ -72,12 +75,73 @@ export default function PainelReprocessarComTabela({
   processXmlFile,
   formatBRL,
   renderStatusIcon,
+  globalMemoryMap,
 }: PainelReprocessarComTabelaProps) {
   const [tableIdToReconcile, setTableIdToReconcile] = useState('');
   const [records, setRecords] = useState<XMLRecord[]>([]);
   const [selectAll, setSelectAll] = useState(false);
+  const [memoryMap, setMemoryMap] = useState<Record<string, number>>({}); // Local memory map
   const fileInputRef = useRef<HTMLInputElement>(null);
   const zipFileInputRef = useRef<HTMLInputElement>(null);
+  const memoryInputRef = useRef<HTMLInputElement>(null);
+
+  // --- Logic --- 
+
+  const parseNumeric = (val: any): number => {
+    if (typeof val === 'number') return val;
+    if (val === undefined || val === null || val === '') return 0;
+    let s = String(val).trim().replace(/[R$\s]/g, '');
+    if (!s) return 0;
+
+    const separators = s.match(/[.,]/g);
+    if (!separators) return parseFloat(s) || 0;
+
+    if (separators.every(sep => sep === separators[0]) && separators.length > 1) {
+      return parseFloat(s.replace(/[.,]/g, '')) || 0;
+    }
+
+    const lastDot = s.lastIndexOf('.');
+    const lastComma = s.lastIndexOf(',');
+    const lastIndex = Math.max(lastDot, lastComma);
+
+    const integerPart = s.substring(0, lastIndex).replace(/[.,]/g, '');
+    const decimalPart = s.substring(lastIndex + 1);
+
+    if (separators.length === 1 && decimalPart.length === 3 && integerPart.length > 0 && integerPart.length <= 3) {
+       return parseFloat(integerPart + decimalPart);
+    }
+
+    const result = parseFloat(integerPart + '.' + decimalPart);
+    return isNaN(result) ? 0 : result;
+  };
+
+  const handleMemoryUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = e.target?.result;
+      const workbook = XLSX.read(data, { type: 'binary' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const json = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false }) as any[][];
+
+      const newMap: Record<string, number> = {};
+      json.slice(1).forEach(row => {
+        const code = String(row[1] || '').trim();
+        const allIn = parseNumeric(row[11] !== undefined ? row[11] : row[5]);
+        if (code && !isNaN(allIn)) {
+          newMap[code] = allIn;
+        }
+      });
+
+      setMemoryMap(newMap);
+      alert(`${Object.keys(newMap).length} registros carregados da Memória de Cálculo.`);
+    };
+    reader.readAsBinaryString(file);
+    if (memoryInputRef.current) memoryInputRef.current.value = '';
+  };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -88,7 +152,7 @@ export default function PainelReprocessarComTabela({
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const text = await file.text();
-      const record = processXmlFile(file.name, text);
+      const record = processXmlFile(file.name, text, memoryMap); // Pass local memoryMap
       if (record) newRecords.push(record);
     }
 
@@ -109,7 +173,7 @@ export default function PainelReprocessarComTabela({
 
       for (const zipEntry of xmlFiles) {
         const text = await zipEntry.async('text');
-        const record = processXmlFile(zipEntry.name, text);
+        const record = processXmlFile(zipEntry.name, text, memoryMap); // Pass local memoryMap
         if (record) newRecords.push(record);
       }
 
@@ -173,6 +237,28 @@ export default function PainelReprocessarComTabela({
     setRecords(prev => prev.map(r => r.id === id ? { ...r, selected: !r.selected } : r));
   };
 
+  const handleReconcileWithMemory = () => {
+    if (Object.keys(memoryMap).length === 0) {
+      alert('Por favor, importe uma Memória de Cálculo primeiro.');
+      return;
+    }
+
+    const updatedRecords = records.map(xmlRecord => {
+      const informed = memoryMap[xmlRecord.codigo || ''] || 0;
+      const isMatch = Math.abs(xmlRecord.totalCalculado - informed) < 0.01;
+
+      return {
+        ...xmlRecord,
+        status: isMatch ? 'Conciliado' : 'Erro na Conciliação',
+        observacao: isMatch ? 'Conciliado com memória de cálculo.' : `Divergência: Esperado ${formatBRL(informed)}, Calculado ${formatBRL(xmlRecord.totalCalculado)}.`, 
+        valueInformed: informed,
+      };
+    });
+
+    setRecords(updatedRecords);
+    alert('Conciliação com Memória de Cálculo concluída.');
+  };
+
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     const checked = e.target.checked;
     setSelectAll(checked);
@@ -216,6 +302,27 @@ export default function PainelReprocessarComTabela({
             </div>
           </div>
           <div className="flex flex-col gap-1">
+            <label className="font-bold">Memória de Cálculo (Excel/CSV):</label>
+            <div className="flex gap-2">
+              <input 
+                type="file" 
+                accept=".xlsx,.xls,.csv" 
+                className="hidden" 
+                ref={memoryInputRef}
+                onChange={handleMemoryUpload}
+              />
+              <button 
+                className="win-button px-4 py-1 font-bold bg-blue-50"
+                onClick={() => memoryInputRef.current?.click()}
+              >
+                Importar Memória...
+              </button>
+              {Object.keys(memoryMap).length > 0 && (
+                <span className="text-green-700 font-bold self-center">✓ {Object.keys(memoryMap).length} itens</span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
             <label className="font-bold">Reprocessar com Tabela de Frete (ID):</label>
             <div className="flex gap-2">
               <input 
@@ -230,6 +337,12 @@ export default function PainelReprocessarComTabela({
                 onClick={handleReconcileWithTable}
               >
                 Reprocessar com Tabela
+              </button>
+              <button 
+                className="win-button px-4 py-1 font-bold bg-blue-50"
+                onClick={handleReconcileWithMemory}
+              >
+                Reprocessar com Memória
               </button>
             </div>
           </div>
